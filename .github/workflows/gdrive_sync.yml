@@ -1,4 +1,5 @@
-name: Kavita to GDrive TXT Sync
+name: Kavita to GDrive TXT Export
+# Description: Download books from Kavita, convert EPUB to TXT, and sync to Google Drive.
 
 on:
   schedule:

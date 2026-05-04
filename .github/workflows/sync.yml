@@ -1,4 +1,5 @@
-name: Kavita Library Sync
+name: Kavita Collection Sync
+# Description: Sync physical folder structure to Kavita collections automatically.
 
 on:
   schedule:
