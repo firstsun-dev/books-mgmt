@@ -112,13 +112,21 @@ def main():
         folder_path = series.get("folderPath", "")
         
         # Determine category (folder structure)
-        # Assuming path format: /path/to/category/SeriesName
-        parts = Path(folder_path).parts
-        category = parts[2] if len(parts) > 2 else "Uncategorized"
-        if category in ["tianyao_books", "/", ""]: 
+        # Robust way: Category is the parent folder of the Series folder
+        if folder_path:
+            p = Path(folder_path)
+            # If folder_path is /path/to/Category/Series, then p.parent.name is Category
+            category = p.parent.name if p.parent.name else "Uncategorized"
+            
+            # Additional check: if parent is just a root or drive, fallback
+            if category in ["/", "tianyao_books", ""]:
+                category = "Uncategorized"
+        else:
             category = "Uncategorized"
         
-        print(f"\n[{idx}/{total_series}] Processing: {series_name} (Category: {category})")
+        print(f"\n[{idx}/{total_series}] Processing: {series_name}")
+        print(f"  -> Local Path: {folder_path}")
+        print(f"  -> Target Category: {category}")
         
         volumes = get_series_volumes(token, series_id)
         for volume in volumes:
