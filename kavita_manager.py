@@ -27,30 +27,43 @@ CF_SECRET = os.environ.get("CF_SECRET")
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 def call_api(method, path, params=None, json_data=None, auth_token=None):
-    url = f"{KAVITA_URL}{path}"
-    cmd = ["curl", "-i", "-s", "-L", "--http2", "-X", method, url]
-    cmd += ["-H", f"User-Agent: {USER_AGENT}", "-H", "Accept: application/json, text/plain, */*", "-H", "Content-Type: application/json"]
-    if CF_SECRET: cmd += ["-H", f"X-CF-Secret: {CF_SECRET}"]
-    if auth_token: cmd += ["-H", f"Authorization: Bearer {auth_token}"]
-    elif path == "/api/Plugin/authenticate": cmd += ["-H", f"x-api-key: {API_KEY}"]
+    final_url = f"{KAVITA_URL}{path}"
     if params:
         from urllib.parse import urlencode
-        query = urlencode(params)
-        cmd[7] = f"{url}?{query}"
+        final_url += f"?{urlencode(params)}"
+        
+    cmd = ["curl", "-i", "-s", "-L", "--http2", "-X", method, final_url]
+    cmd += ["-H", f"User-Agent: {USER_AGENT}"]
+    cmd += ["-H", "Accept: application/json, text/plain, */*"]
+    cmd += ["-H", "Content-Type: application/json"]
+    
+    if CF_SECRET: cmd += ["-H", f"X-CF-Secret: {CF_SECRET}"]
+    if auth_token: cmd += ["-H", f"Authorization: Bearer {auth_token}"]
     if json_data: cmd += ["-d", json.dumps(json_data)]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        parts = result.stdout.split("\r\n\r\n", 1)
+        raw_output = result.stdout
+        if not raw_output: return None
+
+        parts = raw_output.split("\r\n\r\n", 1)
+        headers_raw = parts[0]
         body = parts[1] if len(parts) > 1 else ""
-        if "Just a moment" in body: raise Exception("Cloudflare Block")
-        return json.loads(body) if body.strip() else None
+        
+        if "Just a moment" in body:
+            print("❌ 被 Cloudflare 攔截 (Managed Challenge)")
+            return None
+        
+        if not body.strip(): return None
+        return json.loads(body)
     except Exception as e:
-        if "Cloudflare Block" in str(e): print("❌ 被 Cloudflare 攔截"); raise
+        print(f"DEBUG [API Error]: {e}")
         return None
 
 def authenticate():
-    return (call_api("POST", "/api/Plugin/authenticate") or {}).get("token")
+    params = {"apiKey": API_KEY, "pluginName": "AutoReadingListScript"}
+    data = call_api("POST", "/api/Plugin/authenticate", params=params)
+    return data.get("token") if data else None
 
 def get_all_series(token):
     payload = {"statements": [], "combination": 0, "sortOptions": {"sortField": 1, "isAscending": True}, "limitTo": 0}
@@ -77,11 +90,16 @@ def update_collection_for_series(token, collection_id, collection_title, series_
     call_api("POST", "/api/Collection/update-for-series", json_data=payload, auth_token=token)
 
 def main():
-    if not API_KEY: return
+    if not API_KEY:
+        print("錯誤：找不到有效的 API Key")
+        return
     token = authenticate()
-    if not token: return
+    if not token:
+        print("❌ 驗證失敗")
+        return
+    print("✅ 驗證成功！")
 
-    # 1. 掃描實體資料夾狀態
+    # 1. 掃描實體資料夾
     series_list = get_all_series(token)
     on_disk_groups = {}
     for series in series_list:
@@ -93,51 +111,41 @@ def main():
         if category not in on_disk_groups: on_disk_groups[category] = []
         on_disk_groups[category].append(series["id"])
 
-    # 2. 取得 Kavita 現有收藏狀態
+    # 2. 鏡像同步
     collections = get_collections(token)
-    
-    # 3. 執行鏡像同步
     print(f"--- 開始鏡像同步 (共 {len(on_disk_groups)} 個實體分類) ---")
     
-    # A. 處理現有收藏的「移除」與「更新」
     processed_categories = set()
     for col in collections:
         title = col["title"]
         cid = col["id"]
-        
         if title in on_disk_groups:
-            # 此收藏在硬碟上還存在 -> 檢查是否需要移除已不在該資料夾的書
             processed_categories.add(title)
-            current_series_in_kavita = [s["id"] for s in get_series_in_collection(token, cid)]
-            expected_series_ids = on_disk_groups[title]
+            current_in_kavita = [s["id"] for s in get_series_in_collection(token, cid)]
+            expected = on_disk_groups[title]
             
-            to_remove = [sid for sid in current_series_in_kavita if sid not in expected_series_ids]
+            to_remove = [sid for sid in current_in_kavita if sid not in expected]
             if to_remove:
-                print(f" -> '{title}': 移除 {len(to_remove)} 本已移出的書")
+                print(f" -> '{title}': 移除 {len(to_remove)} 本書")
                 remove_series_from_collection(token, col, to_remove)
             
-            # 加入新書
-            to_add = [sid for sid in expected_series_ids if sid not in current_series_in_kavita]
+            to_add = [sid for sid in expected if sid not in current_in_kavita]
             if to_add:
-                print(f" -> '{title}': 加入 {len(to_add)} 本新書")
+                print(f" -> '{title}': 加入 {len(to_add)} 本書")
                 update_collection_for_series(token, cid, title, to_add)
             
             if not to_remove and not to_add:
-                print(f" -> '{title}': 狀態一致，無需變動")
+                print(f" -> '{title}': 已同步")
         else:
-            # 此收藏在硬碟上已不存在 -> 如果它是我們管理的分類，則刪除
-            # 注意：這裡只刪除「曾出現在我們邏輯中」的分類，避免誤刪使用者手動建立的其他收藏
-            # 但為了簡化，如果您的收藏完全由資料夾驅動，可以直接刪除
-            print(f" -> '{title}': 資料夾已消失，刪除此收藏")
+            print(f" -> '{title}': 資料夾已刪除，清理收藏")
             delete_collection(token, cid)
 
-    # B. 建立全新的收藏
     for title, sids in on_disk_groups.items():
         if title not in processed_categories:
-            print(f" -> '{title}': 建立全新收藏並加入 {len(sids)} 本書")
+            print(f" -> '{title}': 建立新收藏 ({len(sids)} 本)")
             update_collection_for_series(token, 0, title, sids)
 
-    print("\n✅ 鏡像同步完成！")
+    print("\n✅ 所有作業已完成！")
 
 if __name__ == "__main__":
     main()
