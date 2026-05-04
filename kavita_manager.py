@@ -3,6 +3,7 @@ import requests
 import json
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 # --- 載入環境變數 ---
 current_dir = Path(__file__).parent.absolute()
@@ -19,64 +20,75 @@ if env_path.exists():
                     key, value = line.strip().split("=", 1)
                     os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
-KAVITA_URL = os.environ.get("KAVITA_URL", "http://localhost:5000")
+KAVITA_URL = os.environ.get("KAVITA_URL", "http://localhost:5000").rstrip("/")
 API_KEY = os.environ.get("KAVITA_API_KEY")
 CF_SECRET = os.environ.get("CF_SECRET")
 
-# 完全模擬 Chrome 的 Header
+# 極度擬真的 Chrome Headers
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 def call_api(method, path, params=None, json_data=None, auth_token=None):
-    """
-    使用系統的 curl 命令來執行請求，這比 Python requests 更有機會繞過 Cloudflare 的 JA3 指紋檢查。
-    """
     url = f"{KAVITA_URL}{path}"
     
-    # 構建 curl 指令
-    cmd = ["curl", "-s", "-X", method, url]
+    # 基礎 curl 指令 (加入 -i 以取得 Response Headers)
+    # --http2: 模擬現代瀏覽器行為
+    # -L: 跟隨重定向
+    cmd = ["curl", "-i", "-s", "-L", "--http2", "-X", method, url]
     
-    # 加入基礎 Headers
+    # 偽裝標頭
     cmd += ["-H", f"User-Agent: {USER_AGENT}"]
     cmd += ["-H", "Accept: application/json, text/plain, */*"]
+    cmd += ["-H", "Accept-Language: zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"]
+    cmd += ["-H", f"Origin: {KAVITA_URL}"]
+    cmd += ["-H", f"Referer: {KAVITA_URL}/"]
     cmd += ["-H", "Content-Type: application/json"]
     
-    # 加入 Cloudflare Bypass Header
     if CF_SECRET:
         cmd += ["-H", f"X-CF-Secret: {CF_SECRET}"]
     
-    # 加入 API Key 或 JWT Token
     if auth_token:
         cmd += ["-H", f"Authorization: Bearer {auth_token}"]
     elif path == "/api/Plugin/authenticate":
         cmd += ["-H", f"x-api-key: {API_KEY}"]
 
-    # 加入 Query Parameters
     if params:
-        query_str = "&".join([f"{k}={v}" for k, v in params.items()])
-        if "?" in url:
-            cmd[4] = f"{url}&{query_str}"
-        else:
-            cmd[4] = f"{url}?{query_str}"
+        from urllib.parse import urlencode
+        query = urlencode(params)
+        cmd[7] = f"{url}?{query}"
 
-    # 加入 JSON Body
     if json_data:
         cmd += ["-d", json.dumps(json_data)]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        if not result.stdout:
+        raw_output = result.stdout
+        
+        # 分離 Header 與 Body
+        parts = raw_output.split("\r\n\r\n", 1)
+        headers_raw = parts[0]
+        body = parts[1] if len(parts) > 1 else ""
+        
+        # 取得 CF-Ray ID 方便除錯
+        cf_ray = "Unknown"
+        for line in headers_raw.split("\n"):
+            if line.lower().startswith("cf-ray:"):
+                cf_ray = line.split(":", 1)[1].strip()
+        
+        if "Just a moment" in body:
+            print(f"❌ 被 Cloudflare 攔截 (Managed Challenge)")
+            print(f"DEBUG: CF-Ray ID: {cf_ray}")
+            print("請至 Cloudflare 控制台搜尋此 Ray ID 以查看具體原因。")
+            raise Exception("Cloudflare Block")
+
+        if not body.strip():
             return None
-        return json.loads(result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"DEBUG [API Error]: {e.stderr}")
+            
+        return json.loads(body)
+        
+    except Exception as e:
+        if "Cloudflare Block" not in str(e):
+            print(f"❌ 請求失敗: {e}")
         raise
-    except json.JSONDecodeError:
-        # 如果回傳的不是 JSON，可能是 403 挑戰頁面
-        if "Just a moment" in result.stdout:
-            print("❌ 錯誤：依然被 Cloudflare 攔截 (Managed Challenge)")
-        else:
-            print(f"❌ 錯誤：回傳內容不是 JSON: {result.stdout[:200]}")
-        raise Exception("API 請求失敗")
 
 def authenticate():
     data = call_api("POST", "/api/Plugin/authenticate")
@@ -98,61 +110,41 @@ def get_collections(token):
     return call_api("GET", "/api/Collection", auth_token=token)
 
 def update_collection_for_series(token, collection_id, collection_title, series_ids):
-    payload = {
-        "collectionTagId": collection_id,
-        "collectionTagTitle": collection_title,
-        "seriesIds": series_ids
-    }
+    payload = {"collectionTagId": collection_id, "collectionTagTitle": collection_title, "seriesIds": series_ids}
     call_api("POST", "/api/Collection/update-for-series", json_data=payload, auth_token=token)
 
 def main():
     if not API_KEY:
         print("錯誤：找不到有效的 API Key！")
         return
-
     try:
         token = authenticate()
         print("✅ 驗證成功！")
-    except Exception:
-        return
-
-    # 1. 清理書單
-    print("正在清理舊書單...")
-    try:
-        reading_lists = get_reading_lists(token)
-        target_names = ['資訊技術', 'others', '良好習慣', 'TCP研究', '00. 考試相關資料', 
-                        '心靈成長', '財經', '天界之舟', '生活品味', '修行金句', 'tianyao_books', '未分類']
-        for lst in reading_lists:
-            if lst["title"] in target_names:
-                print(f" -> 刪除: {lst['title']}")
-                delete_reading_list(token, lst["id"])
-    except: pass
-
-    # 2. 分類
-    print("正在取得系列資訊...")
-    series_list = get_all_series(token)
-    folder_groups = {}
-    for series in series_list:
-        folder_path = series.get("folderPath")
-        if not folder_path: continue
-        parts = Path(folder_path).parts
-        if len(parts) > 2: category = parts[2]
-        elif len(parts) == 2: category = "未分類"
-        else: continue
-        if category in ["tianyao_books", "/", ""]: continue
-        if category not in folder_groups: folder_groups[category] = []
-        folder_groups[category].append(series["id"])
-
-    # 3. 同步收藏
-    collections = get_collections(token)
-    existing_map = {c["title"]: c["id"] for c in collections}
-
-    for folder_name, series_ids in folder_groups.items():
-        print(f"處理: '{folder_name}' ({len(series_ids)} 本)")
-        cid = existing_map.get(folder_name, 0)
-        update_collection_for_series(token, cid, folder_name, series_ids)
+        series_list = get_all_series(token)
+        print(f"正在分析資料夾並同步 {len(series_list)} 個系列...")
         
-    print("\n✅ 同步完成！")
+        folder_groups = {}
+        for series in series_list:
+            folder_path = series.get("folderPath")
+            if not folder_path: continue
+            parts = Path(folder_path).parts
+            if len(parts) > 2: category = parts[2]
+            elif len(parts) == 2: category = "未分類"
+            else: continue
+            if category in ["tianyao_books", "/", ""]: continue
+            if category not in folder_groups: folder_groups[category] = []
+            folder_groups[category].append(series["id"])
+
+        collections = get_collections(token)
+        existing_map = {c["title"]: c["id"] for c in collections}
+
+        for folder_name, series_ids in folder_groups.items():
+            print(f" -> 同步: '{folder_name}' ({len(series_ids)} 本)")
+            cid = existing_map.get(folder_name, 0)
+            update_collection_for_series(token, cid, folder_name, series_ids)
+        print("\n✅ 所有作業已完成！")
+    except:
+        pass
 
 if __name__ == "__main__":
     main()
