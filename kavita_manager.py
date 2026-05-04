@@ -21,17 +21,24 @@ if env_path.exists():
 KAVITA_URL = os.environ.get("KAVITA_URL", "http://localhost:5000")
 API_KEY = os.environ.get("KAVITA_API_KEY")
 
+# 通用的 Headers，模擬一般瀏覽器以避免被防火牆 (如 Cloudflare) 攔截
+COMMON_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
+
 def authenticate():
     auth_url = f"{KAVITA_URL}/api/Plugin/authenticate"
     response = requests.post(
         auth_url, 
-        params={"apiKey": API_KEY, "pluginName": "AutoReadingListScript"}
+        params={"apiKey": API_KEY, "pluginName": "AutoReadingListScript"},
+        headers=COMMON_HEADERS
     )
     response.raise_for_status()
     token = response.json().get("token")
     return {
+        **COMMON_HEADERS,
         "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
         "Content-Type": "application/json"
     }
 
