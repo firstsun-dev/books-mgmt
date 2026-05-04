@@ -3,7 +3,6 @@ import requests
 import json
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
 
 # --- 載入環境變數 ---
 current_dir = Path(__file__).parent.absolute()
@@ -24,127 +23,121 @@ KAVITA_URL = os.environ.get("KAVITA_URL", "http://localhost:5000").rstrip("/")
 API_KEY = os.environ.get("KAVITA_API_KEY")
 CF_SECRET = os.environ.get("CF_SECRET")
 
-# 極度擬真的 Chrome Headers
+# 完全模擬 Chrome 的 Header
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 def call_api(method, path, params=None, json_data=None, auth_token=None):
     url = f"{KAVITA_URL}{path}"
-    
-    # 基礎 curl 指令 (加入 -i 以取得 Response Headers)
-    # --http2: 模擬現代瀏覽器行為
-    # -L: 跟隨重定向
     cmd = ["curl", "-i", "-s", "-L", "--http2", "-X", method, url]
-    
-    # 偽裝標頭
-    cmd += ["-H", f"User-Agent: {USER_AGENT}"]
-    cmd += ["-H", "Accept: application/json, text/plain, */*"]
-    cmd += ["-H", "Accept-Language: zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"]
-    cmd += ["-H", f"Origin: {KAVITA_URL}"]
-    cmd += ["-H", f"Referer: {KAVITA_URL}/"]
-    cmd += ["-H", "Content-Type: application/json"]
-    
-    if CF_SECRET:
-        cmd += ["-H", f"X-CF-Secret: {CF_SECRET}"]
-    
-    if auth_token:
-        cmd += ["-H", f"Authorization: Bearer {auth_token}"]
-    elif path == "/api/Plugin/authenticate":
-        cmd += ["-H", f"x-api-key: {API_KEY}"]
-
+    cmd += ["-H", f"User-Agent: {USER_AGENT}", "-H", "Accept: application/json, text/plain, */*", "-H", "Content-Type: application/json"]
+    if CF_SECRET: cmd += ["-H", f"X-CF-Secret: {CF_SECRET}"]
+    if auth_token: cmd += ["-H", f"Authorization: Bearer {auth_token}"]
+    elif path == "/api/Plugin/authenticate": cmd += ["-H", f"x-api-key: {API_KEY}"]
     if params:
         from urllib.parse import urlencode
         query = urlencode(params)
         cmd[7] = f"{url}?{query}"
-
-    if json_data:
-        cmd += ["-d", json.dumps(json_data)]
+    if json_data: cmd += ["-d", json.dumps(json_data)]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        raw_output = result.stdout
-        
-        # 分離 Header 與 Body
-        parts = raw_output.split("\r\n\r\n", 1)
-        headers_raw = parts[0]
+        parts = result.stdout.split("\r\n\r\n", 1)
         body = parts[1] if len(parts) > 1 else ""
-        
-        # 取得 CF-Ray ID 方便除錯
-        cf_ray = "Unknown"
-        for line in headers_raw.split("\n"):
-            if line.lower().startswith("cf-ray:"):
-                cf_ray = line.split(":", 1)[1].strip()
-        
-        if "Just a moment" in body:
-            print(f"❌ 被 Cloudflare 攔截 (Managed Challenge)")
-            print(f"DEBUG: CF-Ray ID: {cf_ray}")
-            print("請至 Cloudflare 控制台搜尋此 Ray ID 以查看具體原因。")
-            raise Exception("Cloudflare Block")
-
-        if not body.strip():
-            return None
-            
-        return json.loads(body)
-        
+        if "Just a moment" in body: raise Exception("Cloudflare Block")
+        return json.loads(body) if body.strip() else None
     except Exception as e:
-        if "Cloudflare Block" not in str(e):
-            print(f"❌ 請求失敗: {e}")
-        raise
+        if "Cloudflare Block" in str(e): print("❌ 被 Cloudflare 攔截"); raise
+        return None
 
 def authenticate():
-    data = call_api("POST", "/api/Plugin/authenticate")
-    return data.get("token")
+    return (call_api("POST", "/api/Plugin/authenticate") or {}).get("token")
 
 def get_all_series(token):
     payload = {"statements": [], "combination": 0, "sortOptions": {"sortField": 1, "isAscending": True}, "limitTo": 0}
-    return call_api("POST", "/api/Series/all-v2", json_data=payload, auth_token=token)
-
-def get_reading_lists(token):
-    params = {"PageNumber": 1, "PageSize": 1000}
-    data = call_api("POST", "/api/ReadingList/lists", json_data={}, params=params, auth_token=token)
-    return data["items"] if isinstance(data, dict) and "items" in data else data
-
-def delete_reading_list(token, list_id):
-    call_api("DELETE", "/api/ReadingList", params={"readingListId": list_id}, auth_token=token)
+    return call_api("POST", "/api/Series/all-v2", json_data=payload, auth_token=token) or []
 
 def get_collections(token):
-    return call_api("GET", "/api/Collection", auth_token=token)
+    return call_api("GET", "/api/Collection", auth_token=token) or []
+
+def get_series_in_collection(token, collection_id):
+    params = {"collectionId": collection_id, "PageNumber": 1, "PageSize": 1000}
+    data = call_api("GET", "/api/Series/series-by-collection", params=params, auth_token=token)
+    if isinstance(data, dict) and "items" in data: return data["items"]
+    return data or []
+
+def remove_series_from_collection(token, collection_obj, series_ids):
+    payload = {"tag": collection_obj, "seriesIdsToRemove": series_ids}
+    call_api("POST", "/api/Collection/update-series", json_data=payload, auth_token=token)
+
+def delete_collection(token, collection_id):
+    call_api("DELETE", "/api/Collection", params={"tagId": collection_id}, auth_token=token)
 
 def update_collection_for_series(token, collection_id, collection_title, series_ids):
     payload = {"collectionTagId": collection_id, "collectionTagTitle": collection_title, "seriesIds": series_ids}
     call_api("POST", "/api/Collection/update-for-series", json_data=payload, auth_token=token)
 
 def main():
-    if not API_KEY:
-        print("錯誤：找不到有效的 API Key！")
-        return
-    try:
-        token = authenticate()
-        print("✅ 驗證成功！")
-        series_list = get_all_series(token)
-        print(f"正在分析資料夾並同步 {len(series_list)} 個系列...")
+    if not API_KEY: return
+    token = authenticate()
+    if not token: return
+
+    # 1. 掃描實體資料夾狀態
+    series_list = get_all_series(token)
+    on_disk_groups = {}
+    for series in series_list:
+        folder_path = series.get("folderPath")
+        if not folder_path: continue
+        parts = Path(folder_path).parts
+        category = parts[2] if len(parts) > 2 else None
+        if not category or category in ["tianyao_books", "/", ""]: continue
+        if category not in on_disk_groups: on_disk_groups[category] = []
+        on_disk_groups[category].append(series["id"])
+
+    # 2. 取得 Kavita 現有收藏狀態
+    collections = get_collections(token)
+    
+    # 3. 執行鏡像同步
+    print(f"--- 開始鏡像同步 (共 {len(on_disk_groups)} 個實體分類) ---")
+    
+    # A. 處理現有收藏的「移除」與「更新」
+    processed_categories = set()
+    for col in collections:
+        title = col["title"]
+        cid = col["id"]
         
-        folder_groups = {}
-        for series in series_list:
-            folder_path = series.get("folderPath")
-            if not folder_path: continue
-            parts = Path(folder_path).parts
-            if len(parts) > 2: category = parts[2]
-            elif len(parts) == 2: category = "未分類"
-            else: continue
-            if category in ["tianyao_books", "/", ""]: continue
-            if category not in folder_groups: folder_groups[category] = []
-            folder_groups[category].append(series["id"])
+        if title in on_disk_groups:
+            # 此收藏在硬碟上還存在 -> 檢查是否需要移除已不在該資料夾的書
+            processed_categories.add(title)
+            current_series_in_kavita = [s["id"] for s in get_series_in_collection(token, cid)]
+            expected_series_ids = on_disk_groups[title]
+            
+            to_remove = [sid for sid in current_series_in_kavita if sid not in expected_series_ids]
+            if to_remove:
+                print(f" -> '{title}': 移除 {len(to_remove)} 本已移出的書")
+                remove_series_from_collection(token, col, to_remove)
+            
+            # 加入新書
+            to_add = [sid for sid in expected_series_ids if sid not in current_series_in_kavita]
+            if to_add:
+                print(f" -> '{title}': 加入 {len(to_add)} 本新書")
+                update_collection_for_series(token, cid, title, to_add)
+            
+            if not to_remove and not to_add:
+                print(f" -> '{title}': 狀態一致，無需變動")
+        else:
+            # 此收藏在硬碟上已不存在 -> 如果它是我們管理的分類，則刪除
+            # 注意：這裡只刪除「曾出現在我們邏輯中」的分類，避免誤刪使用者手動建立的其他收藏
+            # 但為了簡化，如果您的收藏完全由資料夾驅動，可以直接刪除
+            print(f" -> '{title}': 資料夾已消失，刪除此收藏")
+            delete_collection(token, cid)
 
-        collections = get_collections(token)
-        existing_map = {c["title"]: c["id"] for c in collections}
+    # B. 建立全新的收藏
+    for title, sids in on_disk_groups.items():
+        if title not in processed_categories:
+            print(f" -> '{title}': 建立全新收藏並加入 {len(sids)} 本書")
+            update_collection_for_series(token, 0, title, sids)
 
-        for folder_name, series_ids in folder_groups.items():
-            print(f" -> 同步: '{folder_name}' ({len(series_ids)} 本)")
-            cid = existing_map.get(folder_name, 0)
-            update_collection_for_series(token, cid, folder_name, series_ids)
-        print("\n✅ 所有作業已完成！")
-    except:
-        pass
+    print("\n✅ 鏡像同步完成！")
 
 if __name__ == "__main__":
     main()
