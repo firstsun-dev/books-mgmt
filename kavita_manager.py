@@ -21,6 +21,14 @@ if env_path.exists():
 KAVITA_URL = os.environ.get("KAVITA_URL", "http://localhost:5000")
 API_KEY = os.environ.get("KAVITA_API_KEY")
 
+# --- CI 測試專用：驗證 Secret 是否有傳進來 (不會洩漏完整 Key) ---
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    if API_KEY:
+        masked_key = f"{API_KEY[:2]}...{API_KEY[-2:]}" if len(API_KEY) > 4 else "***"
+        print(f"DEBUG [CI]: 偵測到 API_KEY, 長度: {len(API_KEY)}, 遮罩: {masked_key}")
+    else:
+        print("DEBUG [CI]: ❌ 完全沒有偵測到 API_KEY 環境變數")
+
 # 通用的 Headers，模擬一般瀏覽器以避免被防火牆 (如 Cloudflare) 攔截
 COMMON_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
