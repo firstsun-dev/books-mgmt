@@ -21,7 +21,6 @@ if env_path.exists():
 
 KAVITA_URL = os.environ.get("KAVITA_URL", "http://localhost:5000").rstrip("/")
 API_KEY = os.environ.get("KAVITA_API_KEY")
-CF_SECRET = os.environ.get("CF_SECRET")
 
 # 完全模擬 Chrome 的 Header
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -37,7 +36,6 @@ def call_api(method, path, params=None, json_data=None, auth_token=None):
     cmd += ["-H", "Accept: application/json, text/plain, */*"]
     cmd += ["-H", "Content-Type: application/json"]
     
-    if CF_SECRET: cmd += ["-H", f"X-CF-Secret: {CF_SECRET}"]
     if auth_token: cmd += ["-H", f"Authorization: Bearer {auth_token}"]
     if json_data: cmd += ["-d", json.dumps(json_data)]
 

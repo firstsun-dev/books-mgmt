@@ -26,5 +26,4 @@ jobs:
         env:
           KAVITA_URL: ${{ vars.KAVITA_URL }}
           KAVITA_API_KEY: ${{ secrets.KAVITA_API_KEY }}
-          CF_SECRET: ${{ secrets.CF_SECRET }}
         run: python kavita_manager.py
