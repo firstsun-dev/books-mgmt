@@ -1,0 +1,39 @@
+name: Kavita to GDrive TXT Sync
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # 每天凌晨 2 點執行
+  workflow_dispatch: # 允許手動執行
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Setup rclone
+        uses: firstsun-dev/.github/actions/setup-rclone@main
+        with:
+          gdrive_client_id: ${{ secrets.GDRIVE_CLIENT_ID }}
+          gdrive_client_secret: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          gdrive_token: ${{ secrets.GDRIVE_TOKEN }}
+          gdrive_folder_id: ${{ secrets.GDRIVE_FOLDER_ID }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run Sync Script
+        env:
+          KAVITA_URL: ${{ vars.KAVITA_URL }}
+          KAVITA_API_KEY: ${{ secrets.KAVITA_API_KEY }}
+          GDRIVE_REMOTE: "gdrive"
+        run: uv run gdrive_sync.py
