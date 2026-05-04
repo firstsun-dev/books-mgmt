@@ -1,0 +1,29 @@
+name: Kavita Library Sync
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 每天凌晨執行一次
+  workflow_dispatch: # 允許手動執行
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Run Kavita Manager
+        env:
+          KAVITA_URL: ${{ vars.KAVITA_URL }}
+          KAVITA_API_KEY: ${{ secrets.KAVITA_API_KEY }}
+        run: python kavita_manager.py
