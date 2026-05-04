@@ -6,12 +6,12 @@ from pathlib import Path
 import warnings
 import ebooklib
 from ebooklib import epub
+from bs4 import BeautifulSoup
+import requests
 
 # Suppress ebooklib warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
-from bs4 import BeautifulSoup
-import requests
 
 # --- Kavita Configuration ---
 KAVITA_URL = os.environ.get("KAVITA_URL", "").rstrip("/")
@@ -20,7 +20,6 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # --- GDrive Configuration (rclone) ---
 GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
-GDRIVE_FOLDER_ID = os.environ.get("GDRIVE_FOLDER_ID", "")
 
 def call_api(method, path, params=None, json_data=None, auth_token=None, stream=False):
     final_url = f"{KAVITA_URL}{path}"
@@ -52,78 +51,95 @@ def get_series_volumes(token, series_id):
     return call_api("GET", f"/api/Series/volumes", params={"seriesId": series_id}, auth_token=token) or []
 
 def download_chapter(token, chapter_id, dest_path):
-    print(f"Downloading chapter {chapter_id} to {dest_path}...")
     response = call_api("GET", "/api/Download/chapter", params={"chapterId": chapter_id}, auth_token=token, stream=True)
     with open(dest_path, 'wb') as f:
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
 
 def epub_to_txt(epub_path, txt_path):
-    print(f"Converting {epub_path} to {txt_path}...")
     book = epub.read_epub(epub_path)
     text_content = []
     
-    # Sort items to maintain order if possible
     for item in book.get_items():
         if item.get_type() == ebooklib.ITEM_DOCUMENT:
             soup = BeautifulSoup(item.get_content(), 'html.parser')
-            # Get text and clean it up
             text = soup.get_text(separator='\n')
             text_content.append(text)
     
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write('\n\n'.join(text_content))
 
-def check_gdrive_file_exists(filename):
-    """Check if file exists in the specific GDrive folder using rclone."""
-    cmd = ["rclone", "lsjson", f"{GDRIVE_REMOTE}:", "--files-only"]
+def check_gdrive_file_exists(remote_path):
+    """Check if file exists in the specific GDrive path using rclone."""
+    parent = str(Path(remote_path).parent)
+    target_name = Path(remote_path).name
+    
+    # Use rclone lsjson to check the parent directory
+    cmd = ["rclone", "lsjson", f"{GDRIVE_REMOTE}:{parent}", "--files-only"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            return False
+        
         files = json.loads(result.stdout)
-        return any(f['name'] == filename for f in files)
-    except Exception as e:
-        print(f"Error checking GDrive: {e}")
+        return any(f['name'] == target_name for f in files)
+    except Exception:
         return False
 
-def upload_to_gdrive(local_path, remote_filename):
+def upload_to_gdrive(local_path, remote_path):
     """Upload file to GDrive using rclone."""
-    print(f"Uploading {local_path} to GDrive as {remote_filename}...")
-    cmd = ["rclone", "copyto", str(local_path), f"{GDRIVE_REMOTE}:{remote_filename}"]
-    subprocess.run(cmd, check=True)
+    cmd = ["rclone", "copyto", str(local_path), f"{GDRIVE_REMOTE}:{remote_path}"]
+    subprocess.run(cmd, check=True, capture_output=True)
 
 def main():
     if not API_KEY:
-        print("Error: KAVITA_API_KEY not found.")
+        print("❌ Error: KAVITA_API_KEY not found.")
         return
     
     token = authenticate()
     if not token:
-        print("Authentication failed.")
+        print("❌ Authentication failed.")
         return
-    print("Kavita authenticated.")
+    print("✅ Kavita authenticated.")
 
     series_list = get_all_series(token)
-    print(f"Found {len(series_list)} series.")
+    total_series = len(series_list)
+    print(f"📚 Found {total_series} series in Kavita.")
 
-    for series in series_list:
+    for idx, series in enumerate(series_list, 1):
         series_id = series['id']
         series_name = series['name']
-        print(f"\nProcessing Series: {series_name}")
+        folder_path = series.get("folderPath", "")
+        
+        # Determine category (folder structure)
+        # Assuming path format: /path/to/category/SeriesName
+        parts = Path(folder_path).parts
+        category = parts[2] if len(parts) > 2 else "Uncategorized"
+        if category in ["tianyao_books", "/", ""]: 
+            category = "Uncategorized"
+        
+        print(f"\n[{idx}/{total_series}] Processing: {series_name} (Category: {category})")
         
         volumes = get_series_volumes(token, series_id)
         for volume in volumes:
             chapters = volume.get('chapters', [])
-            for chapter in chapters:
+            total_chapters = len(chapters)
+            
+            for c_idx, chapter in enumerate(chapters, 1):
                 chapter_id = chapter['id']
                 chapter_name = chapter['title']
-                filename = f"{series_name} - {chapter_name}.txt"
                 
-                # Check if already in GDrive
-                if check_gdrive_file_exists(filename):
-                    print(f" -> Skipping: {filename} already exists in GDrive.")
+                # Mirror folder structure: Category / Series Name / Chapter.txt
+                remote_path = f"{category}/{series_name}/{chapter_name}.txt"
+                
+                # Inline progress display
+                print(f"  ({c_idx}/{total_chapters}) Checking: {chapter_name}", end="\r", flush=True)
+                
+                if check_gdrive_file_exists(remote_path):
                     continue
                 
-                # Sync process
+                print(f"\n  ({c_idx}/{total_chapters}) 🚀 Syncing: {chapter_name}")
+                
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_dir_path = Path(tmp_dir)
                     epub_path = tmp_dir_path / "book.epub"
@@ -132,10 +148,11 @@ def main():
                     try:
                         download_chapter(token, chapter_id, epub_path)
                         epub_to_txt(epub_path, txt_path)
-                        upload_to_gdrive(txt_path, filename)
-                        print(f" -> Successfully synced: {filename}")
+                        upload_to_gdrive(txt_path, remote_path)
                     except Exception as e:
-                        print(f" -> Error processing {filename}: {e}")
+                        print(f"\n  ❌ Error processing {chapter_name}: {e}")
+
+    print("\n✨ All synchronization tasks completed!")
 
 if __name__ == "__main__":
     main()
