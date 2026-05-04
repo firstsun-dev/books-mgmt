@@ -31,9 +31,14 @@ if os.environ.get("GITHUB_ACTIONS") == "true":
 
 # 通用的 Headers，模擬一般瀏覽器以避免被防火牆 (如 Cloudflare) 攔截
 COMMON_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (GitHub-Actions; Kavita-Manager)",
     "Accept": "application/json",
 }
+
+# 如果有設定 CF_BYPASS_HEADER，則加入以繞過 Cloudflare WAF
+CF_SECRET = os.environ.get("CF_SECRET")
+if CF_SECRET:
+    COMMON_HEADERS["X-CF-Secret"] = CF_SECRET
 
 def authenticate():
     auth_url = f"{KAVITA_URL}/api/Plugin/authenticate"
