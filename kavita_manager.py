@@ -37,11 +37,18 @@ COMMON_HEADERS = {
 
 def authenticate():
     auth_url = f"{KAVITA_URL}/api/Plugin/authenticate"
-    response = requests.post(
-        auth_url, 
-        params={"apiKey": API_KEY, "pluginName": "AutoReadingListScript"},
-        headers=COMMON_HEADERS
-    )
+    # 改用 Header 傳送 API Key，這比 Query Parameter 更安全且更不容易被擋
+    headers = {
+        **COMMON_HEADERS,
+        "x-api-key": API_KEY
+    }
+    
+    # Kavita 也支援直接在 authenticate 時不傳任何 params
+    response = requests.post(auth_url, headers=headers)
+    
+    if response.status_code != 200:
+        print(f"DEBUG [Authenticate]: 失敗. Status: {response.status_code}, Body: {response.text}")
+    
     response.raise_for_status()
     token = response.json().get("token")
     return {
