@@ -22,8 +22,10 @@ if env_path.exists():
 KAVITA_URL = os.environ.get("KAVITA_URL", "http://localhost:5000").rstrip("/")
 API_KEY = os.environ.get("KAVITA_API_KEY")
 
-# 完全模擬 Chrome 的 Header
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+# 使用獨特的 User-Agent 方便 Cloudflare 設定 WAF 排除規則
+USER_AGENT = "KavitaSyncScript/1.0"
+CF_CLIENT_ID = os.environ.get("CF_ACCESS_CLIENT_ID")
+CF_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET")
 
 def call_api(method, path, params=None, json_data=None, auth_token=None):
     final_url = f"{KAVITA_URL}{path}"
@@ -35,6 +37,9 @@ def call_api(method, path, params=None, json_data=None, auth_token=None):
     cmd += ["-H", f"User-Agent: {USER_AGENT}"]
     cmd += ["-H", "Accept: application/json, text/plain, */*"]
     cmd += ["-H", "Content-Type: application/json"]
+    
+    if CF_CLIENT_ID: cmd += ["-H", f"CF-Access-Client-Id: {CF_CLIENT_ID}"]
+    if CF_CLIENT_SECRET: cmd += ["-H", f"CF-Access-Client-Secret: {CF_CLIENT_SECRET}"]
     
     if auth_token: cmd += ["-H", f"Authorization: Bearer {auth_token}"]
     if json_data: cmd += ["-d", json.dumps(json_data)]
