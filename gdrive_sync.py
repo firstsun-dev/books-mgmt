@@ -10,9 +10,19 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 import requests
 
-# Suppress ebooklib warnings
-warnings.filterwarnings('ignore', category=UserWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
+# --- Load Environment Variables ---
+current_dir = Path(__file__).parent.absolute()
+env_path = current_dir / ".env"
+if env_path.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=env_path)
+    except ImportError:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if "=" in line and not line.startswith("#"):
+                    key, value = line.strip().split("=", 1)
+                    os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
 # --- Kavita Configuration ---
 KAVITA_URL = os.environ.get("KAVITA_URL", "").rstrip("/")
@@ -240,8 +250,13 @@ def main():
                     if chapter_format not in [3, 4]:
                         continue
                     
-                    # Flattened hierarchy: Collection / Series - Chapter.txt
-                    remote_path = f"{col_title}/{series_name} - {chapter_name}.txt"
+                    # Simplify name if series and chapter are identical
+                    if series_name == chapter_name:
+                        file_name = f"{series_name}.txt"
+                    else:
+                        file_name = f"{series_name} - {chapter_name}.txt"
+                    
+                    remote_path = f"{col_title}/{file_name}"
                     
                     # Inline progress
                     print(f"    ({ch_idx}/{total_chapters}) Checking: {chapter_name}", end="\r", flush=True)
