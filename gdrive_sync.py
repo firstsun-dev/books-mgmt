@@ -73,21 +73,28 @@ def call_api(method, path, params=None, json_data=None, auth_token=None, downloa
                 break
         
         if b"Just a moment" in body or "403 Forbidden" in status_line:
-            print(f"DEBUG: API blocked by Cloudflare at {path}. Status: {status_line}")
+            print(f"DEBUG: API blocked by Cloudflare or Forbidden at {path}. Status: {status_line}")
+            if body: print(f"DEBUG: Response body: {body.decode('utf-8', errors='ignore')[:500]}")
             return None
 
         if download_path:
             if "200" not in status_line:
                 print(f"DEBUG: Download failed for {path}. Status: {status_line}")
+                if body: print(f"DEBUG: Response body: {body.decode('utf-8', errors='ignore')[:500]}")
                 return False
             with open(download_path, "wb") as f:
                 f.write(body)
             return True
 
-        if not body.strip(): return None
+        if not body.strip(): 
+            if "200" not in status_line:
+                print(f"DEBUG: API Error at {path}. Status: {status_line}")
+            return None
         try:
             return json.loads(body.decode('utf-8'))
-        except:
+        except Exception as e:
+            print(f"DEBUG: JSON decode error at {path}: {e}")
+            print(f"DEBUG: Response body snippet: {body.decode('utf-8', errors='ignore')[:500]}")
             return None
     except Exception as e:
         print(f"DEBUG: subprocess error: {e}")
