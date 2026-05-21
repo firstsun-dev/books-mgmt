@@ -223,12 +223,13 @@ def main():
             series_id = series['id']
             series_name = series['name']
             
-            print(f"  [{s_idx}/{total_series}] Processing Series: {series_name}")
-            
             volumes = get_series_volumes(token, series_id)
+            print(f"  [{s_idx}/{total_series}] Processing Series: {series_name} ({len(volumes)} volumes)")
+            
             for volume in volumes:
                 chapters = volume.get('chapters', [])
                 total_chapters = len(chapters)
+                print(f"    📖 Volume: {volume.get('name', 'Unknown')} ({total_chapters} chapters)")
                 
                 for ch_idx, chapter in enumerate(chapters, 1):
                     chapter_id = chapter['id']
