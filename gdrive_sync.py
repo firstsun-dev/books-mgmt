@@ -16,30 +16,39 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 # --- Kavita Configuration ---
 KAVITA_URL = os.environ.get("KAVITA_URL", "").rstrip("/")
 API_KEY = os.environ.get("KAVITA_API_KEY")
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+USER_AGENT = "KavitaSyncScript/1.0"
+CF_CLIENT_ID = os.environ.get("CF_ACCESS_CLIENT_ID")
+CF_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET")
 
-# --- GDrive Configuration (rclone) ---
-GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
-
-# Global cache for existing files in GDrive to speed up checks
-gdrive_files_cache = set()
-
-def call_api(method, path, params=None, json_data=None, auth_token=None, stream=False):
+def call_api(method, path, params=None, json_data=None, auth_token=None, stream=False, download_path=None):
     final_url = f"{KAVITA_URL}{path}"
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json"
-    }
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+    if params:
+        from urllib.parse import urlencode
+        final_url += f"?{urlencode(params)}"
     
-    response = requests.request(method, final_url, params=params, json=json_data, headers=headers, stream=stream)
-    response.raise_for_status()
+    cmd = ["curl", "-s", "-L", "-X", method, final_url]
+    cmd += ["-H", f"User-Agent: {USER_AGENT}"]
+    cmd += ["-H", "Accept: application/json, text/plain, */*"]
     
-    if stream:
-        return response
-    return response.json() if response.content else None
+    if CF_CLIENT_ID: cmd += ["-H", f"CF-Access-Client-Id: {CF_CLIENT_ID}"]
+    if CF_CLIENT_SECRET: cmd += ["-H", f"CF-Access-Client-Secret: {CF_CLIENT_SECRET}"]
+    if auth_token: cmd += ["-H", f"Authorization: Bearer {auth_token}"]
+    
+    if json_data:
+        cmd += ["-H", "Content-Type: application/json"]
+        cmd += ["-d", json.dumps(json_data)]
+    
+    if download_path:
+        cmd += ["-o", str(download_path)]
+        subprocess.run(cmd, check=True)
+        return True
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if not result.stdout.strip(): return None
+    try:
+        return json.loads(result.stdout)
+    except:
+        return None
 
 def authenticate():
     params = {"apiKey": API_KEY, "pluginName": "GdriveSyncScript"}
@@ -59,10 +68,7 @@ def get_series_volumes(token, series_id):
     return call_api("GET", f"/api/Series/volumes", params={"seriesId": series_id}, auth_token=token) or []
 
 def download_chapter(token, chapter_id, dest_path):
-    response = call_api("GET", "/api/Download/chapter", params={"chapterId": chapter_id}, auth_token=token, stream=True)
-    with open(dest_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
+    call_api("GET", "/api/Download/chapter", params={"chapterId": chapter_id}, auth_token=token, download_path=dest_path)
 
 def epub_to_txt(epub_path, txt_path):
     book = epub.read_epub(epub_path)
