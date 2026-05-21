@@ -22,6 +22,13 @@ CF_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET")
 
 # --- GDrive Configuration (rclone) ---
 GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
+GDRIVE_FOLDER_ID = os.environ.get("GDRIVE_FOLDER_ID")
+
+# 建立 rclone 的基礎路徑。如果提供了 Folder ID，則將路徑鎖定在該資料夾內。
+if GDRIVE_FOLDER_ID:
+    GDRIVE_ROOT = f"{GDRIVE_REMOTE},root_folder_id={GDRIVE_FOLDER_ID}:"
+else:
+    GDRIVE_ROOT = f"{GDRIVE_REMOTE}:"
 
 # Global cache for existing files in GDrive to speed up checks
 gdrive_files_cache = set()
@@ -124,8 +131,8 @@ def epub_to_txt(epub_path, txt_path):
 
 def init_gdrive_cache():
     """Build a global cache of all existing TXT files in GDrive for fast lookups."""
-    print("🔍 Scanning Google Drive for existing files (this may take a moment)...")
-    cmd = ["rclone", "lsf", "-R", "--files-only", f"{GDRIVE_REMOTE}:"]
+    print(f"🔍 Scanning Google Drive ({GDRIVE_ROOT}) for existing files...")
+    cmd = ["rclone", "lsf", "-R", "--files-only", GDRIVE_ROOT]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
@@ -145,7 +152,7 @@ def check_gdrive_file_exists(remote_path):
     # Fallback to live check if cache was not initialized or for newly uploaded files
     parent = str(Path(remote_path).parent)
     target_name = Path(remote_path).name
-    cmd = ["rclone", "lsjson", f"{GDRIVE_REMOTE}:{parent}", "--files-only"]
+    cmd = ["rclone", "lsjson", f"{GDRIVE_ROOT}{parent}", "--files-only"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0: return False
@@ -156,7 +163,7 @@ def check_gdrive_file_exists(remote_path):
 
 def upload_to_gdrive(local_path, remote_path):
     """Upload file to GDrive using rclone."""
-    cmd = ["rclone", "copyto", str(local_path), f"{GDRIVE_REMOTE}:{remote_path}"]
+    cmd = ["rclone", "copyto", str(local_path), f"{GDRIVE_ROOT}{remote_path}"]
     subprocess.run(cmd, check=True, capture_output=True)
     # Update cache
     gdrive_files_cache.add(remote_path)

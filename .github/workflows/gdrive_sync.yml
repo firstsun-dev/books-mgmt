@@ -32,4 +32,5 @@ jobs:
           KAVITA_URL: ${{ vars.KAVITA_URL }}
           KAVITA_API_KEY: ${{ secrets.KAVITA_API_KEY }}
           GDRIVE_REMOTE: "gdrive"
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: uv run gdrive_sync.py
