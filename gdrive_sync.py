@@ -234,10 +234,10 @@ def main():
                 for ch_idx, chapter in enumerate(chapters, 1):
                     chapter_id = chapter['id']
                     chapter_name = chapter['title']
-                    chapter_format = chapter.get('format') # 1=Epub, 2=Pdf
+                    chapter_format = chapter.get('format') # 3=Epub, 4=Pdf
                     
-                    # 跳過非 Epub (1) 或 PDF (2) 的檔案 (例如 CBR, CBZ)
-                    if chapter_format not in [1, 2]:
+                    # Kavita formats: 3=Epub, 4=Pdf
+                    if chapter_format not in [3, 4]:
                         continue
                     
                     # Flattened hierarchy: Collection / Series - Chapter.txt
@@ -253,14 +253,14 @@ def main():
                     
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp_dir_path = Path(tmp_dir)
-                        # 根據格式決定暫存檔名
-                        book_filename = "book.epub" if chapter_format == 1 else "book.pdf"
+                        # 根據格式決定暫存檔名: 3=Epub, 4=Pdf
+                        book_filename = "book.epub" if chapter_format == 3 else "book.pdf"
                         book_path = tmp_dir_path / book_filename
                         txt_path = tmp_dir_path / "book.txt"
                         
                         try:
                             download_chapter(token, chapter_id, book_path)
-                            if chapter_format == 1:
+                            if chapter_format == 3:
                                 epub_to_txt(book_path, txt_path)
                             else:
                                 pdf_to_txt(book_path, txt_path)
