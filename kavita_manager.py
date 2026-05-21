@@ -29,13 +29,25 @@ CF_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET")
 
 def call_api(method, path, params=None, json_data=None, auth_token=None):
     final_url = f"{KAVITA_URL}{path}"
+    
+    # 診斷資訊 (僅在 CI 環境顯示部分內容以策安全)
+    if os.environ.get("GITHUB_ACTIONS"):
+        masked_url = KAVITA_URL[:12] + "..." + KAVITA_URL[-4:] if len(KAVITA_URL) > 16 else "Invalid URL"
+        key_status = "Set (Len:" + str(len(API_KEY)) + ")" if API_KEY else "Not Set"
+        print(f"DEBUG: Requesting {path} | URL: {masked_url} | Key: {key_status} | UA: {USER_AGENT}")
+
     if params:
         from urllib.parse import urlencode
         final_url += f"?{urlencode(params)}"
         
-    cmd = ["curl", "-i", "-s", "-L", "--http2", "-X", method, final_url]
+    # 增加更多模擬瀏覽器的 Header
+    cmd = ["curl", "-i", "-s", "-L", "-X", method, final_url]
     cmd += ["-H", f"User-Agent: {USER_AGENT}"]
     cmd += ["-H", "Accept: application/json, text/plain, */*"]
+    cmd += ["-H", "Accept-Language: en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7"]
+    cmd += ["-H", "Cache-Control: no-cache"]
+    cmd += ["-H", "Pragma: no-cache"]
+    cmd += ["-H", f"Referer: {KAVITA_URL}/"]
     cmd += ["-H", "Content-Type: application/json"]
     
     if CF_CLIENT_ID: cmd += ["-H", f"CF-Access-Client-Id: {CF_CLIENT_ID}"]
