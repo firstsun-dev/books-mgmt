@@ -20,13 +20,14 @@ USER_AGENT = "KavitaSyncScript/1.0"
 CF_CLIENT_ID = os.environ.get("CF_ACCESS_CLIENT_ID")
 CF_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET")
 
-def call_api(method, path, params=None, json_data=None, auth_token=None, stream=False, download_path=None):
+def call_api(method, path, params=None, json_data=None, auth_token=None, download_path=None):
     final_url = f"{KAVITA_URL}{path}"
     if params:
         from urllib.parse import urlencode
         final_url += f"?{urlencode(params)}"
     
-    cmd = ["curl", "-s", "-L", "-X", method, final_url]
+    # 使用 -i 包含 Header，且不要用 text=True 以免二進位檔案損壞
+    cmd = ["curl", "-i", "-s", "-L", "-X", method, final_url]
     cmd += ["-H", f"User-Agent: {USER_AGENT}"]
     cmd += ["-H", "Accept: application/json, text/plain, */*"]
     
@@ -38,16 +39,48 @@ def call_api(method, path, params=None, json_data=None, auth_token=None, stream=
         cmd += ["-H", "Content-Type: application/json"]
         cmd += ["-d", json.dumps(json_data)]
     
-    if download_path:
-        cmd += ["-o", str(download_path)]
-        subprocess.run(cmd, check=True)
-        return True
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if not result.stdout.strip(): return None
     try:
-        return json.loads(result.stdout)
-    except:
+        # 重要：使用 capture_output=True 但不要 text=True
+        result = subprocess.run(cmd, capture_output=True, check=True)
+        raw_output = result.stdout
+        
+        # 拆分 Header 和 Body (二進位處理)
+        if b"\r\n\r\n" in raw_output:
+            parts = raw_output.rsplit(b"\r\n\r\n", 1)
+        elif b"\n\n" in raw_output:
+            parts = raw_output.rsplit(b"\n\n", 1)
+        else:
+            parts = [raw_output, b""]
+            
+        headers_last = parts[0].decode('utf-8', errors='ignore')
+        body = parts[1]
+        
+        # 提取最後一個狀態碼
+        status_line = "Unknown Status"
+        for line in reversed(headers_last.splitlines()):
+            if line.startswith("HTTP/"):
+                status_line = line
+                break
+        
+        if b"Just a moment" in body or "403 Forbidden" in status_line:
+            print(f"DEBUG: API blocked by Cloudflare at {path}. Status: {status_line}")
+            return None
+
+        if download_path:
+            if "200" not in status_line:
+                print(f"DEBUG: Download failed for {path}. Status: {status_line}")
+                return False
+            with open(download_path, "wb") as f:
+                f.write(body)
+            return True
+
+        if not body.strip(): return None
+        try:
+            return json.loads(body.decode('utf-8'))
+        except:
+            return None
+    except Exception as e:
+        print(f"DEBUG: subprocess error: {e}")
         return None
 
 def authenticate():
