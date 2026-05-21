@@ -7,6 +7,7 @@ import warnings
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 import requests
 
 # Suppress ebooklib warnings
@@ -129,6 +130,15 @@ def epub_to_txt(epub_path, txt_path):
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write('\n\n'.join(text_content))
 
+def pdf_to_txt(pdf_path, txt_path):
+    reader = PdfReader(pdf_path)
+    text_content = []
+    for page in reader.pages:
+        text_content.append(page.extract_text() or "")
+    
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write('\n\n'.join(text_content))
+
 def init_gdrive_cache():
     """Build a global cache of all existing TXT files in GDrive for fast lookups."""
     print(f"🔍 Scanning Google Drive ({GDRIVE_ROOT}) for existing files...")
@@ -208,6 +218,11 @@ def main():
                 for ch_idx, chapter in enumerate(chapters, 1):
                     chapter_id = chapter['id']
                     chapter_name = chapter['title']
+                    chapter_format = chapter.get('format') # 1=Epub, 2=Pdf
+                    
+                    # 跳過非 Epub (1) 或 PDF (2) 的檔案 (例如 CBR, CBZ)
+                    if chapter_format not in [1, 2]:
+                        continue
                     
                     # Hierarchy: Collection / Series / Chapter.txt
                     remote_path = f"{col_title}/{series_name}/{chapter_name}.txt"
@@ -222,12 +237,17 @@ def main():
                     
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp_dir_path = Path(tmp_dir)
-                        epub_path = tmp_dir_path / "book.epub"
+                        # 根據格式決定暫存檔名
+                        book_filename = "book.epub" if chapter_format == 1 else "book.pdf"
+                        book_path = tmp_dir_path / book_filename
                         txt_path = tmp_dir_path / "book.txt"
                         
                         try:
-                            download_chapter(token, chapter_id, epub_path)
-                            epub_to_txt(epub_path, txt_path)
+                            download_chapter(token, chapter_id, book_path)
+                            if chapter_format == 1:
+                                epub_to_txt(book_path, txt_path)
+                            else:
+                                pdf_to_txt(book_path, txt_path)
                             upload_to_gdrive(txt_path, remote_path)
                         except Exception as e:
                             print(f"\n    ❌ Error processing {chapter_name}: {e}")
