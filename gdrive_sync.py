@@ -142,15 +142,20 @@ def pdf_to_txt(pdf_path, txt_path):
 def init_gdrive_cache():
     """Build a global cache of all existing TXT files in GDrive for fast lookups."""
     print(f"🔍 Scanning Google Drive ({GDRIVE_ROOT}) for existing files...")
+    # Hide the root_folder_id for security if possible, or just print the command
     cmd = ["rclone", "lsf", "-R", "--files-only", GDRIVE_ROOT]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
-            for line in result.stdout.splitlines():
+            lines = result.stdout.splitlines()
+            for line in lines:
                 gdrive_files_cache.add(line.strip())
             print(f"✅ Found {len(gdrive_files_cache)} files in GDrive.")
         else:
-            print("⚠️ Could not initialize GDrive cache. Will perform live checks.")
+            print(f"⚠️ Could not initialize GDrive cache. Return code: {result.returncode}")
+            if result.stderr:
+                print(f"DEBUG: rclone error: {result.stderr.strip()}")
+            print("Will perform live checks.")
     except Exception as e:
         print(f"⚠️ Error initializing GDrive cache: {e}")
 
@@ -194,6 +199,9 @@ def main():
     collections = get_collections(token)
     total_collections = len(collections)
     print(f"📂 Found {total_collections} collections in Kavita.")
+    
+    if total_collections == 0:
+        print("⚠️ No collections found. Please check if Kavita has collections and if API access is correct.")
 
     for c_idx, col in enumerate(collections, 1):
         col_id = col['id']
@@ -202,8 +210,12 @@ def main():
         series_in_col = get_series_in_collection(token, col_id)
         total_series = len(series_in_col)
         
-        print(f"\n[{c_idx}/{total_collections}] 📂 Collection: {col_title} ({total_series} series)")
+        print(f"\n[{c_idx}/{total_collections}] 📂 Collection: {col_title} (ID: {col_id}, {total_series} series)")
         
+        if total_series == 0:
+            print(f"  ⚠️ No series found in collection '{col_title}'.")
+            continue
+
         for s_idx, series in enumerate(series_in_col, 1):
             series_id = series['id']
             series_name = series['name']
