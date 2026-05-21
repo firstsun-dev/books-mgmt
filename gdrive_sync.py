@@ -18,8 +18,6 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 KAVITA_URL = os.environ.get("KAVITA_URL", "").rstrip("/")
 API_KEY = os.environ.get("KAVITA_API_KEY")
 USER_AGENT = "KavitaSyncScript/1.0"
-CF_CLIENT_ID = os.environ.get("CF_ACCESS_CLIENT_ID")
-CF_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET")
 
 # --- GDrive Configuration (rclone) ---
 GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
@@ -45,8 +43,6 @@ def call_api(method, path, params=None, json_data=None, auth_token=None, downloa
     cmd += ["-H", f"User-Agent: {USER_AGENT}"]
     cmd += ["-H", "Accept: application/json, text/plain, */*"]
     
-    if CF_CLIENT_ID: cmd += ["-H", f"CF-Access-Client-Id: {CF_CLIENT_ID}"]
-    if CF_CLIENT_SECRET: cmd += ["-H", f"CF-Access-Client-Secret: {CF_CLIENT_SECRET}"]
     if auth_token: cmd += ["-H", f"Authorization: Bearer {auth_token}"]
     
     if json_data:

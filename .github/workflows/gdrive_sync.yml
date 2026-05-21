@@ -31,8 +31,6 @@ jobs:
         env:
           KAVITA_URL: ${{ vars.KAVITA_URL }}
           KAVITA_API_KEY: ${{ secrets.KAVITA_API_KEY }}
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           GDRIVE_REMOTE: "gdrive"
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: uv run gdrive_sync.py
