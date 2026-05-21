@@ -8,23 +8,21 @@ on:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests python-dotenv
+        run: uv sync
 
       - name: Run Kavita Manager
         env:
           KAVITA_URL: ${{ vars.KAVITA_URL }}
           KAVITA_API_KEY: ${{ secrets.KAVITA_API_KEY }}
-        run: python kavita_manager.py
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: uv run kavita_manager.py
