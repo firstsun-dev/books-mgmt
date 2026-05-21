@@ -20,6 +20,12 @@ USER_AGENT = "KavitaSyncScript/1.0"
 CF_CLIENT_ID = os.environ.get("CF_ACCESS_CLIENT_ID")
 CF_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET")
 
+# --- GDrive Configuration (rclone) ---
+GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
+
+# Global cache for existing files in GDrive to speed up checks
+gdrive_files_cache = set()
+
 def call_api(method, path, params=None, json_data=None, auth_token=None, download_path=None):
     final_url = f"{KAVITA_URL}{path}"
     if params:
