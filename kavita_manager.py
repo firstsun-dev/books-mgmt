@@ -42,20 +42,54 @@ def call_api(method, path, params=None, json_data=None, auth_token=None):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         raw_output = result.stdout
-        if not raw_output: return None
+        if not raw_output:
+            print(f"DEBUG: No output from curl for {path}")
+            return None
 
-        parts = raw_output.split("\r\n\r\n", 1)
-        headers_raw = parts[0]
-        body = parts[1] if len(parts) > 1 else ""
+        # Handle multiple header blocks (e.g. from redirects)
+        # We look for the last occurrence of double newline which separates the final headers from the body
+        if "\r\n\r\n" in raw_output:
+            parts = raw_output.rsplit("\r\n\r\n", 1)
+        elif "\n\n" in raw_output:
+            parts = raw_output.rsplit("\n\n", 1)
+        else:
+            parts = [raw_output, ""]
+            
+        body = parts[1].strip()
+        headers_last = parts[0]
+        
+        # If there are multiple header blocks, headers_last might still contain previous headers and bodies.
+        # But rsplit(..., 1) ensures parts[1] is everything after the LAST \r\n\r\n.
+        
+        # Extract the last status line
+        header_lines = headers_last.splitlines()
+        status_line = "Unknown Status"
+        for line in reversed(header_lines):
+            if line.startswith("HTTP/"):
+                status_line = line
+                break
         
         if "Just a moment" in body:
-            print("❌ 被 Cloudflare 攔截 (Managed Challenge)")
+            print(f"❌ 被 Cloudflare 攔截 (Managed Challenge). Status: {status_line}")
             return None
         
-        if not body.strip(): return None
-        return json.loads(body)
+        if not body:
+            if "200" not in status_line and "201" not in status_line:
+                print(f"DEBUG [API Error]: Status {status_line}, Empty Body")
+            return None
+            
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as e:
+            if "200" not in status_line and "201" not in status_line:
+                # If not a success status, the body might be HTML or plain text error message
+                print(f"DEBUG [API Error]: Status {status_line}")
+                if len(body) < 500: print(f"Body: {body}")
+            else:
+                print(f"DEBUG [JSON Error]: {e}. Body snippet: {body[:200]}")
+            return None
     except Exception as e:
-        print(f"DEBUG [API Error]: {e}")
+        print(f"DEBUG [subprocess/API Error]: {e}")
         return None
 
 def authenticate():
