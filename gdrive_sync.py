@@ -224,8 +224,8 @@ def main():
                     if chapter_format not in [1, 2]:
                         continue
                     
-                    # Hierarchy: Collection / Series / Chapter.txt
-                    remote_path = f"{col_title}/{series_name}/{chapter_name}.txt"
+                    # Flattened hierarchy: Collection / Series - Chapter.txt
+                    remote_path = f"{col_title}/{series_name} - {chapter_name}.txt"
                     
                     # Inline progress
                     print(f"    ({ch_idx}/{total_chapters}) Checking: {chapter_name}", end="\r", flush=True)

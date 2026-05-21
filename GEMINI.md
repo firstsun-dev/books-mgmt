@@ -68,7 +68,7 @@ This feature downloads books from Kavita, converts them to plain text, and mirro
     - `KAVITA_URL`
 
 ### Efficiency Mechanism
-The script uses `rclone` to list files in the target Google Drive folder before processing. If a file named `{Series} - {Chapter}.txt` already exists, the script will skip the download and conversion steps for that book, significantly reducing API calls and bandwidth usage.
+The script uses `rclone` to list files in the target Google Drive folder before processing. If a file named `{Collection}/{Series} - {Chapter}.txt` already exists, the script will skip the download and conversion steps for that book, significantly reducing API calls and bandwidth usage.
 
 ### Conversion Logic
 EPUB files are parsed using `EbookLib`, and text is extracted from HTML documents using `BeautifulSoup4`. This ensures a lightweight, pure-Python conversion process suitable for GitHub Actions.
