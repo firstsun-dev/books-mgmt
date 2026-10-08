@@ -1,5 +1,7 @@
 import os
+import re
 import subprocess
+import sys
 import json
 import tempfile
 from pathlib import Path
@@ -8,6 +10,7 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
+from pypdf.errors import DependencyError, PyPdfError
 import requests
 
 # --- Load Environment Variables ---
@@ -41,6 +44,131 @@ else:
 
 # Global cache for existing files in GDrive to speed up checks
 gdrive_files_cache = set()
+
+# Tracks remote_path -> owning chapter_id for this run, so two different
+# chapters that sanitize to the same name don't silently overwrite each other.
+_remote_path_owners = {}
+
+
+class BookProcessingError(Exception):
+    """A single book failed to download/convert/upload for a reportable reason.
+
+    Raising this (instead of letting a raw exception propagate) lets main()
+    skip the offending book, keep processing the rest, and still surface the
+    failure in the final summary and exit code.
+    """
+
+
+# --- Path sanitization ---
+#
+# Kavita metadata (collection titles, series names, chapter titles) is
+# user-controlled free text and is used verbatim to build rclone remote
+# paths. A literal '/' or '\\' in a title is indistinguishable from an
+# intentional path separator, and control characters (including NUL) crash
+# subprocess/path APIs outright. sanitize_path_component() must be applied to
+# every such value BEFORE it is combined into a remote_path.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+FULLWIDTH_SOLIDUS = "／"  # U+FF0F, replaces ASCII '/'
+FULLWIDTH_BACKSLASH = "＼"  # U+FF3C, replaces ASCII '\'
+
+
+def sanitize_path_component(name, fallback="_untitled_"):
+    """Make `name` safe to use as a single rclone remote path component.
+
+    - Strips control characters (incl. NUL) that crash filesystem/subprocess APIs.
+    - Replaces '/' and '\\' with their fullwidth lookalikes so a literal slash
+      in a title can never be mistaken for a path separator.
+    - Collapses '.', '..', and empty/whitespace-only names to `fallback`,
+      since those would otherwise reference the current/parent directory.
+
+    Deliberately does NOT apply unicode normalization (e.g. NFKC) afterwards:
+    NFKC folds the fullwidth slash/backslash back into their ASCII originals,
+    which would silently reintroduce the exact bug this function exists to fix.
+    Applying this function twice to its own output is a no-op (idempotent).
+    """
+    text = "" if name is None else str(name)
+    text = _CONTROL_CHARS_RE.sub("", text)
+    text = text.replace("/", FULLWIDTH_SOLIDUS).replace("\\", FULLWIDTH_BACKSLASH)
+    text = text.strip()
+    if text in ("", ".", ".."):
+        return fallback
+    return text
+
+
+def build_file_name(series_name, chapter_name):
+    """Compose the export filename from (already-sanitized) series/chapter names."""
+    if series_name == chapter_name:
+        return f"{series_name}.txt"
+    return f"{series_name} - {chapter_name}.txt"
+
+
+def resolve_remote_path(col_title, file_name, chapter_id):
+    """Sanitize col_title/file_name into a remote_path and guard against collisions.
+
+    Two different Kavita chapters can sanitize to the same remote path (e.g.
+    one title uses '/' and another already used the fullwidth '／'). Rather
+    than letting the second silently overwrite the first on upload, the
+    second occurrence is deterministically suffixed with its chapter_id. This
+    only tracks collisions within a single run - it's a last-resort guard
+    against distinct source titles colliding, not a rename of the original.
+    """
+    safe_col = sanitize_path_component(col_title)
+    safe_file = sanitize_path_component(file_name)
+    remote_path = f"{safe_col}/{safe_file}"
+
+    owner = _remote_path_owners.get(remote_path)
+    if owner is not None and owner != chapter_id:
+        stem, ext = os.path.splitext(safe_file)
+        disambiguated = f"{stem} ({chapter_id}){ext}"
+        remote_path = f"{safe_col}/{disambiguated}"
+        print(
+            f"⚠️ Filename collision: '{file_name}' in collection '{col_title}' "
+            f"normalizes to a name already used by another chapter. "
+            f"Disambiguating to: {remote_path}"
+        )
+
+    _remote_path_owners[remote_path] = chapter_id
+    return remote_path
+
+
+# --- Downloaded content validation ---
+#
+# Kavita's download endpoint can return a non-2xx body, an empty body, or
+# (per chapter_format) bytes that are simply not the format we expect. These
+# must be caught by inspecting the actual bytes rather than assuming the
+# declared chapter_format is correct, so a corrupt source file is reported
+# distinctly from a real code bug.
+PDF_MAGIC = b"%PDF-"
+EPUB_ZIP_MAGIC = b"PK"  # EPUB is a zip container
+
+
+def validate_downloaded_file(path, chapter_format):
+    """Confirm the downloaded file exists, is non-empty, and has a plausible
+    magic header for the declared Kavita format (3=Epub, 4=Pdf)."""
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        raise BookProcessingError("downloaded file is missing or empty (Kavita download failed)")
+
+    with open(path, "rb") as f:
+        header = f.read(8)
+
+    if chapter_format == 4:
+        if not header.startswith(PDF_MAGIC):
+            raise BookProcessingError(f"not a valid PDF file (unexpected header {header!r})")
+    elif chapter_format == 3:
+        if not header.startswith(EPUB_ZIP_MAGIC):
+            raise BookProcessingError(f"not a valid EPUB/zip archive (unexpected header {header!r})")
+
+
+def validate_text_output(txt_path, min_chars=20):
+    """Reject an export that is empty or near-empty (e.g. a scan-only PDF with
+    no extractable text layer), instead of silently uploading a blank file."""
+    text = Path(txt_path).read_text(encoding="utf-8", errors="ignore")
+    if len(text.strip()) < min_chars:
+        raise BookProcessingError(
+            f"extracted text too short ({len(text.strip())} chars) - "
+            "likely a scan-only/image PDF with no text layer (unsupported, OCR not implemented)"
+        )
 
 def call_api(method, path, params=None, json_data=None, auth_token=None, download_path=None):
     final_url = f"{KAVITA_URL}{path}"
@@ -128,27 +256,46 @@ def get_series_volumes(token, series_id):
     return call_api("GET", f"/api/Series/volumes", params={"seriesId": series_id}, auth_token=token) or []
 
 def download_chapter(token, chapter_id, dest_path):
-    call_api("GET", "/api/Download/chapter", params={"chapterId": chapter_id}, auth_token=token, download_path=dest_path)
+    """Returns True only if Kavita responded with a 200 and the body was written."""
+    return bool(call_api("GET", "/api/Download/chapter", params={"chapterId": chapter_id}, auth_token=token, download_path=dest_path))
 
 def epub_to_txt(epub_path, txt_path):
-    book = epub.read_epub(epub_path)
+    try:
+        book = epub.read_epub(epub_path)
+    except Exception as e:
+        raise BookProcessingError(f"invalid/corrupt EPUB (zip) archive: {e}") from e
+
     text_content = []
-    
     for item in book.get_items():
         if item.get_type() == ebooklib.ITEM_DOCUMENT:
             soup = BeautifulSoup(item.get_content(), 'html.parser')
             text = soup.get_text(separator='\n')
             text_content.append(text)
-    
+
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write('\n\n'.join(text_content))
 
 def pdf_to_txt(pdf_path, txt_path):
-    reader = PdfReader(pdf_path)
-    text_content = []
-    for page in reader.pages:
-        text_content.append(page.extract_text() or "")
-    
+    try:
+        reader = PdfReader(pdf_path)
+        if reader.is_encrypted:
+            # Only ever try a blank/empty user password (e.g. PDFs that
+            # restrict printing/editing but don't actually password-protect
+            # content). Never attempts to guess or crack a real password.
+            try:
+                reader.decrypt("")
+            except Exception as e:
+                raise BookProcessingError(
+                    f"PDF is password-protected and could not be opened with a blank password: {e}"
+                ) from e
+        text_content = [page.extract_text() or "" for page in reader.pages]
+    except BookProcessingError:
+        raise
+    except DependencyError as e:
+        raise BookProcessingError(f"PDF requires a missing dependency to decode: {e}") from e
+    except PyPdfError as e:
+        raise BookProcessingError(f"invalid/corrupt PDF structure: {e}") from e
+
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write('\n\n'.join(text_content))
 
@@ -199,12 +346,12 @@ def upload_to_gdrive(local_path, remote_path):
 def main():
     if not API_KEY:
         print("❌ Error: KAVITA_API_KEY not found.")
-        return
-    
+        sys.exit(1)
+
     token = authenticate()
     if not token:
         print("❌ Authentication failed.")
-        return
+        sys.exit(1)
     print("✅ Kavita authenticated.")
 
     init_gdrive_cache()
@@ -212,19 +359,22 @@ def main():
     collections = get_collections(token)
     total_collections = len(collections)
     print(f"📂 Found {total_collections} collections in Kavita.")
-    
+
     if total_collections == 0:
         print("⚠️ No collections found. Please check if Kavita has collections and if API access is correct.")
+
+    stats = {"uploaded": 0, "skipped": 0, "failed": 0}
+    failures = []  # list of (series - chapter, reason)
 
     for c_idx, col in enumerate(collections, 1):
         col_id = col['id']
         col_title = col['title']
-        
+
         series_in_col = get_series_in_collection(token, col_id)
         total_series = len(series_in_col)
-        
+
         print(f"\n[{c_idx}/{total_collections}] 📂 Collection: {col_title} (ID: {col_id}, {total_series} series)")
-        
+
         if total_series == 0:
             print(f"  ⚠️ No series found in collection '{col_title}'.")
             continue
@@ -232,58 +382,82 @@ def main():
         for s_idx, series in enumerate(series_in_col, 1):
             series_id = series['id']
             series_name = series['name']
-            
+
             volumes = get_series_volumes(token, series_id)
             print(f"  [{s_idx}/{total_series}] Processing Series: {series_name} ({len(volumes)} volumes)")
-            
+
             for volume in volumes:
                 chapters = volume.get('chapters', [])
                 total_chapters = len(chapters)
                 print(f"    📖 Volume: {volume.get('name', 'Unknown')} ({total_chapters} chapters)")
-                
+
                 for ch_idx, chapter in enumerate(chapters, 1):
                     chapter_id = chapter['id']
                     chapter_name = chapter['title']
                     chapter_format = chapter.get('format') # 3=Epub, 4=Pdf
-                    
+
                     # Kavita formats: 3=Epub, 4=Pdf
                     if chapter_format not in [3, 4]:
                         continue
-                    
-                    # Simplify name if series and chapter are identical
-                    if series_name == chapter_name:
-                        file_name = f"{series_name}.txt"
-                    else:
-                        file_name = f"{series_name} - {chapter_name}.txt"
-                    
-                    remote_path = f"{col_title}/{file_name}"
-                    
+
+                    # Sanitize BEFORE composing/using the name anywhere (a raw
+                    # '/' or NUL byte in these titles previously broke rclone
+                    # paths and crashed subprocess calls - see sanitize_path_component).
+                    safe_series_name = sanitize_path_component(series_name)
+                    safe_chapter_name = sanitize_path_component(chapter_name)
+                    file_name = build_file_name(safe_series_name, safe_chapter_name)
+                    remote_path = resolve_remote_path(col_title, file_name, chapter_id)
+
                     # Inline progress
                     print(f"    ({ch_idx}/{total_chapters}) Checking: {chapter_name}", end="\r", flush=True)
-                    
+
                     if check_gdrive_file_exists(remote_path):
+                        stats["skipped"] += 1
                         continue
-                    
+
                     print(f"\n    ({ch_idx}/{total_chapters}) 🚀 Syncing: {chapter_name}")
-                    
+
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp_dir_path = Path(tmp_dir)
                         # 根據格式決定暫存檔名: 3=Epub, 4=Pdf
                         book_filename = "book.epub" if chapter_format == 3 else "book.pdf"
                         book_path = tmp_dir_path / book_filename
                         txt_path = tmp_dir_path / "book.txt"
-                        
+
                         try:
-                            download_chapter(token, chapter_id, book_path)
+                            ok = download_chapter(token, chapter_id, book_path)
+                            if not ok:
+                                raise BookProcessingError("Kavita download request failed (non-200 response)")
+                            validate_downloaded_file(book_path, chapter_format)
                             if chapter_format == 3:
                                 epub_to_txt(book_path, txt_path)
                             else:
                                 pdf_to_txt(book_path, txt_path)
+                            validate_text_output(txt_path)
                             upload_to_gdrive(txt_path, remote_path)
-                        except Exception as e:
+                            stats["uploaded"] += 1
+                        except BookProcessingError as e:
                             print(f"\n    ❌ Error processing {chapter_name}: {e}")
+                            stats["failed"] += 1
+                            failures.append((f"{series_name} - {chapter_name}", str(e)))
+                        except Exception as e:
+                            print(f"\n    ❌ Unexpected error processing {chapter_name}: {e}")
+                            stats["failed"] += 1
+                            failures.append((f"{series_name} - {chapter_name}", f"unexpected: {e}"))
+
+    print("\n📊 Summary")
+    print(f"   ✅ Uploaded: {stats['uploaded']}")
+    print(f"   ⏭️  Skipped (already in GDrive): {stats['skipped']}")
+    print(f"   ❌ Failed: {stats['failed']}")
+    if failures:
+        print("\n❌ Failed books:")
+        for title, reason in failures:
+            print(f"   - {title}: {reason}")
 
     print("\n✨ All synchronization tasks completed!")
+
+    if stats["failed"] > 0:
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
