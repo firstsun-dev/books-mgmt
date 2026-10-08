@@ -9,4 +9,5 @@ dependencies = [
     "ebooklib>=0.18",
     "beautifulsoup4>=4.12.3",
     "pypdf>=4.2.0",
+    "cryptography>=50.0.2",
 ]
